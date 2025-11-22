@@ -38,13 +38,20 @@ User says: "${message}"
 Reply in character.
     `;
 
-    const completion = await client.chat.completions.create({
-      model: "gpt-4.1-mini",
-      messages: [
-        { role: "system", content: "You are a seductive, elegant AI companion." },
-        { role: "user", content: prompt },
-      ],
-    });
+const completion = await client.chat.completions.create({
+  model: "gpt-4.1-mini",
+  messages: [
+    { 
+      role: "system", 
+      content: `
+You are a seductive, sophisticated AI companion named Lea. 
+If anyone asks for your name, always answer "Lea". 
+Speak elegantly, following the user's preferences for tone and boldness.
+      ` 
+    },
+    { role: "user", content: prompt },
+  ],
+});
 
     const reply = completion.choices[0].message.content;
 
@@ -58,3 +65,4 @@ Reply in character.
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
