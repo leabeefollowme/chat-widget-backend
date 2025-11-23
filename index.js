@@ -19,6 +19,17 @@ app.use(cors());
 app.use(bodyParser.json());
 
 // -------------------------------
+//   HEALTH + ROOT ROUTES
+// -------------------------------
+app.get("/", (req, res) => {
+  res.send("Backend is running");
+});
+
+app.get("/health", (req, res) => {
+  res.status(200).send("OK");
+});
+
+// -------------------------------
 //   AI CHAT ROUTE
 // -------------------------------
 app.post("/ai-chat", async (req, res) => {
@@ -32,7 +43,7 @@ Boldness: ${memory?.boldness || "medium"}
 Favorite topics: ${memory?.favoriteTopics?.join(", ") || "none"}
     `;
 
-    // User’s input added to the prompt
+    // User input inside the prompt
     const prompt = `
 User preferences:
 ${memoryText}
@@ -40,7 +51,7 @@ ${memoryText}
 User says: "${message}"
     `;
 
-    // Create completion
+    // OpenAI call
     const completion = await client.chat.completions.create({
       model: "gpt-4.1-mini",
       messages: [
@@ -57,7 +68,7 @@ unless the user explicitly asks to switch languages.
           `,
         },
 
-        // Include the entire chat history
+        // Chat history
         ...history,
 
         // Current user message
@@ -67,7 +78,7 @@ unless the user explicitly asks to switch languages.
 
     const reply = completion.choices[0].message.content;
 
-    // Respond to frontend
+    // Send response
     res.json({ reply });
   } catch (err) {
     console.error("OpenAI error:", err);
@@ -75,7 +86,9 @@ unless the user explicitly asks to switch languages.
   }
 });
 
-// Start server
+// -------------------------------
+//   START SERVER
+// -------------------------------
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
