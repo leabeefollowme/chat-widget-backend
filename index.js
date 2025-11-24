@@ -81,4 +81,63 @@ app.get("/webhook", (req, res) => {
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if
+  if (mode && token === VERIFY_TOKEN) {
+    console.log("WEBHOOK VERIFIED");
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
+  }
+});
+
+// POST (Receive messages)
+app.post("/webhook", async (req, res) => {
+  const body = req.body;
+
+  if (body.object === "page") {
+    body.entry.forEach(async (entry) => {
+      const event = entry.messaging[0];
+      const senderId = event.sender.id;
+
+      if (event.message && event.message.text) {
+        const userMessage = event.message.text;
+
+        // OpenAI request
+        const completion = await client.chat.completions.create({
+          model: "gpt-4.1-mini",
+          messages: [
+            {
+              role: "system",
+              content: `
+Current date: ${new Date().toISOString()}
+
+You are Lea — a seductive, sophisticated AI companion.
+Always reply in the language the user uses.
+              `,
+            },
+            { role: "user", content: userMessage },
+          ],
+        });
+
+        const reply = completion.choices[0].message.content;
+
+        // Send reply to Messenger
+        await axios.post(
+          `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_TOKEN}`,
+          {
+            recipient: { id: senderId },
+            message: { text: reply },
+          }
+        );
+      }
+    });
+
+    res.sendStatus(200);
+  } else {
+    res.sendStatus(404);
+  }
+});
+
+// -------------------------------
+//   START SERVER
+// -------------------------------
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
