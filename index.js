@@ -17,65 +17,24 @@ const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 app.use(cors());
 app.use(bodyParser.json());
 
+// In-memory storage for user conversations and memory
+const userConversations = {}; // { senderId: [ {role, content}, ... ] }
+const userMemory = {}; // { senderId: { tone, boldness, favoriteTopics } }
+
+// Maximum messages to keep in conversation history to prevent token overflow
+const MAX_CONVERSATION_LENGTH = 20;
+
 // -------------------------------
-//   HEALTH ROUTES
+// Health route
 // -------------------------------
 app.get("/", (req, res) => res.send("Backend is running"));
-app.get("/health", (req, res) => res.status(200).send("OK"));
 
 // -------------------------------
-//   FRONTEND AI CHAT ROUTE
+// Messenger webhook verification
 // -------------------------------
-app.post("/ai-chat", async (req, res) => {
-  try {
-    const { message, memory, history = [] } = req.body;
-
-    const memoryText = `
-Tone: ${memory?.tone || "seductive"}
-Boldness: ${memory?.boldness || "medium"}
-Favorite topics: ${memory?.favoriteTopics?.join(", ") || "none"}
-    `;
-
-    const prompt = `
-User preferences:
-${memoryText}
-
-User says: "${message}"
-    `;
-
-    const completion = await client.chat.completions.create({
-      model: "gpt-4.1-mini",
-      messages: [
-        {
-          role: "system",
-          content: `
-Current date: ${new Date().toISOString()}
-
-You are Lea — a seductive, sophisticated, elegant AI companion.
-Follow the user's preferences for tone, boldness, and interests.
-Always reply in the SAME LANGUAGE the user used in their last message.
-          `,
-        },
-        ...history,
-        { role: "user", content: prompt },
-      ],
-    });
-
-    const reply = completion.choices[0].message.content;
-    res.json({ reply });
-  } catch (err) {
-    console.error("OpenAI error:", err);
-    res.status(500).json({ reply: "Error contacting my intelligence core…" });
-  }
-});
-
-// -------------------------------
-//   MESSENGER WEBHOOK
-// -------------------------------
-const PAGE_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+const PAGE_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 
-// GET: Webhook verification
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -93,7 +52,9 @@ app.get("/webhook", (req, res) => {
   }
 });
 
-// POST: Webhook message handling
+// -------------------------------
+// Receive messages
+// -------------------------------
 app.post("/webhook", async (req, res) => {
   const body = req.body;
 
@@ -105,7 +66,32 @@ app.post("/webhook", async (req, res) => {
       if (event.message && event.message.text) {
         const userMessage = event.message.text;
 
+        // Initialize conversation and memory if first message
+        if (!userConversations[senderId]) userConversations[senderId] = [];
+        if (!userMemory[senderId])
+          userMemory[senderId] = {
+            tone: "friendly",
+            boldness: "medium",
+            favoriteTopics: [],
+          };
+
+        // Add user message to history
+        userConversations[senderId].push({ role: "user", content: userMessage });
+
+        // Trim old messages if exceeding MAX_CONVERSATION_LENGTH
+        while (userConversations[senderId].length > MAX_CONVERSATION_LENGTH) {
+          userConversations[senderId].shift();
+        }
+
         try {
+          // Prepare memory text
+          const memoryText = `
+Tone: ${userMemory[senderId].tone}
+Boldness: ${userMemory[senderId].boldness}
+Favorite topics: ${userMemory[senderId].favoriteTopics.join(", ") || "none"}
+          `;
+
+          // Call OpenAI with conversation + memory
           const completion = await client.chat.completions.create({
             model: "gpt-4.1-mini",
             messages: [
@@ -114,16 +100,23 @@ app.post("/webhook", async (req, res) => {
                 content: `
 Current date: ${new Date().toISOString()}
 
-You are Lea — a seductive, sophisticated AI companion.
-Always reply in the language the user uses.
+You are Lea — a sophisticated AI companion.
+Follow the user's preferences for tone, boldness, and favorite topics.
+Always reply in the same language the user uses.
+User preferences:
+${memoryText}
                 `,
               },
-              { role: "user", content: userMessage },
+              ...userConversations[senderId],
             ],
           });
 
           const reply = completion.choices[0].message.content;
 
+          // Add AI reply to history
+          userConversations[senderId].push({ role: "assistant", content: reply });
+
+          // Send reply to Messenger
           await axios.post(
             `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_TOKEN}`,
             {
@@ -132,20 +125,65 @@ Always reply in the language the user uses.
             }
           );
         } catch (err) {
-          console.error("Messenger sending error:", err.response?.data || err);
+          console.error("OpenAI / Messenger error:", err.response?.data || err);
         }
       }
     });
 
     res.sendStatus(200);
-    return;
+  } else {
+    res.sendStatus(404);
   }
-
-  res.sendStatus(404);
 });
 
 // -------------------------------
-//   START SERVER
+// Optional: Frontend AI-chat route
+// -------------------------------
+app.post("/ai-chat", async (req, res) => {
+  try {
+    const { message, memory = {}, history = [] } = req.body;
+
+    const memoryText = `
+Tone: ${memory.tone || "friendly"}
+Boldness: ${memory.boldness || "medium"}
+Favorite topics: ${memory.favoriteTopics?.join(", ") || "none"}
+    `;
+
+    const prompt = `
+User preferences:
+${memoryText}
+
+User says: "${message}"
+    `;
+
+    const completion = await client.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages: [
+        {
+          role: "system",
+          content: `
+Current date: ${new Date().toISOString()}
+
+You are Lea — a sophisticated AI companion.
+Follow the user's preferences for tone, boldness, and interests.
+Always reply in the same language the user used in their last message.
+          `,
+        },
+        ...history,
+        { role: "user", content: prompt },
+      ],
+    });
+
+    const reply = completion.choices[0].message.content;
+    res.json({ reply });
+  } catch (err) {
+    console.error("OpenAI error:", err);
+    res.status(500).json({ reply: "Error contacting my intelligence core…" });
+  }
+});
+
+// -------------------------------
+// Start server
 // -------------------------------
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
