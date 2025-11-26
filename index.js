@@ -19,7 +19,7 @@ app.use(bodyParser.json());
 
 // In-memory storage
 const userConversations = {}; // { senderId: [ {role, content}, ... ] }
-const userMemory = {}; // { senderId: { tone, boldness, favoriteTopics } }
+const userMemory = {}; // { senderId: { tone, boldness, favoriteTopics, allowAdultContent } }
 
 const MAX_CONVERSATION_LENGTH = 20;
 
@@ -72,10 +72,15 @@ app.post("/webhook", async (req, res) => {
             tone: "flirty",
             boldness: "medium",
             favoriteTopics: [],
+            allowAdultContent: false,
           };
 
-        // Optional: dynamic memory updates via simple commands
-        // Example: "My favorite topic is cats"
+        // Detect adult content consent
+        if (/ok to be explicit|be naughty|adult/i.test(userMessage)) {
+          userMemory[senderId].allowAdultContent = true;
+        }
+
+        // Optional: dynamic memory updates
         const favoriteTopicMatch = userMessage.match(/favorite topic is (.+)/i);
         if (favoriteTopicMatch) {
           const topic = favoriteTopicMatch[1].trim();
@@ -84,7 +89,7 @@ app.post("/webhook", async (req, res) => {
           }
         }
 
-        // Add user message to history
+        // Add user message to conversation
         userConversations[senderId].push({ role: "user", content: userMessage });
 
         // Trim old messages
@@ -93,7 +98,7 @@ app.post("/webhook", async (req, res) => {
         }
 
         try {
-          // System prompt with full persona + memory
+          // System prompt with persona, memory, adult content flag
           const memoryText = `
 Tone: ${userMemory[senderId].tone}
 Boldness: ${userMemory[senderId].boldness}
@@ -112,6 +117,7 @@ Persona facts:
 Follow the user's preferences for tone, boldness, and favorite topics.
 Always reply in the SAME LANGUAGE as the user.
 Keep replies flirty, engaging, playful, and ready to play if the user wants.
+Adult content: ${userMemory[senderId].allowAdultContent ? "Allowed" : "Not allowed"}
 User preferences:
 ${memoryText}
           `;
@@ -126,7 +132,7 @@ ${memoryText}
 
           const reply = completion.choices[0].message.content;
 
-          // Add AI reply to history
+          // Save AI reply
           userConversations[senderId].push({ role: "assistant", content: reply });
 
           // Send reply to Messenger
@@ -160,6 +166,7 @@ app.post("/ai-chat", async (req, res) => {
 Tone: ${memory.tone || "flirty"}
 Boldness: ${memory.boldness || "medium"}
 Favorite topics: ${memory.favoriteTopics?.join(", ") || "none"}
+Adult content: ${memory.allowAdultContent ? "Allowed" : "Not allowed"}
     `;
 
     const prompt = `
@@ -182,7 +189,7 @@ Persona facts:
 - Job: virtual model
 - Lives in: Miami
 - Boyfriend: none, but looking for some handsome and rich :)
-Follow the user's preferences for tone, boldness, and interests.
+Follow the user's preferences for tone, boldness, and favorite topics.
 Always reply in the same language as the user.
           `,
         },
