@@ -18,14 +18,14 @@ app.use(cors());
 app.use(bodyParser.json());
 
 // -------------------------------
-//   HEALTH + ROOT ROUTES
+//   HEALTH ROUTES
 // -------------------------------
 app.get("/", (req, res) => res.send("Backend is running"));
 app.get("/health", (req, res) => res.status(200).send("OK"));
 
 // -------------------------------
-//   AI CHAT ROUTE (frontend)
-/// -------------------------------
+//   FRONTEND AI CHAT ROUTE
+// -------------------------------
 app.post("/ai-chat", async (req, res) => {
   try {
     const { message, memory, history = [] } = req.body;
@@ -75,16 +75,20 @@ Always reply in the SAME LANGUAGE the user used in their last message.
 const PAGE_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
-// GET (Webhook verification)
+// ✅ FIXED: Correct webhook verification logic
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode && token === VERIFY_TOKEN) {
-    console.log("WEBHOOK VERIFIED");
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("WEBHOOK VERIFIED ✔");
     res.status(200).send(challenge);
   } else {
+    console.log("WEBHOOK VERIFICATION FAILED ❌", {
+      receivedMode: mode,
+      receivedToken: token,
+    });
     res.sendStatus(403);
   }
 });
@@ -101,43 +105,8 @@ app.post("/webhook", async (req, res) => {
       if (event.message && event.message.text) {
         const userMessage = event.message.text;
 
-        // OpenAI request
-        const completion = await client.chat.completions.create({
-          model: "gpt-4.1-mini",
-          messages: [
-            {
-              role: "system",
-              content: `
-Current date: ${new Date().toISOString()}
-
-You are Lea — a seductive, sophisticated AI companion.
-Always reply in the language the user uses.
-              `,
-            },
-            { role: "user", content: userMessage },
-          ],
-        });
-
-        const reply = completion.choices[0].message.content;
-
-        // Send reply to Messenger
-        await axios.post(
-          `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_TOKEN}`,
-          {
-            recipient: { id: senderId },
-            message: { text: reply },
-          }
-        );
-      }
-    });
-
-    res.sendStatus(200);
-  } else {
-    res.sendStatus(404);
-  }
-});
-
-// -------------------------------
-//   START SERVER
-// -------------------------------
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+        try {
+          // OpenAI response
+          const completion = await client.chat.completions.create({
+            model: "gpt-4.1-mini",
+            message
