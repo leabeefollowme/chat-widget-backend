@@ -17,11 +17,10 @@ const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 app.use(cors());
 app.use(bodyParser.json());
 
-// In-memory storage for user conversations and memory
+// In-memory storage
 const userConversations = {}; // { senderId: [ {role, content}, ... ] }
 const userMemory = {}; // { senderId: { tone, boldness, favoriteTopics } }
 
-// Maximum messages to keep in conversation history to prevent token overflow
 const MAX_CONVERSATION_LENGTH = 20;
 
 // -------------------------------
@@ -66,47 +65,61 @@ app.post("/webhook", async (req, res) => {
       if (event.message && event.message.text) {
         const userMessage = event.message.text;
 
-        // Initialize conversation and memory if first message
+        // Initialize conversation and memory
         if (!userConversations[senderId]) userConversations[senderId] = [];
         if (!userMemory[senderId])
           userMemory[senderId] = {
-            tone: "friendly",
+            tone: "flirty",
             boldness: "medium",
             favoriteTopics: [],
           };
 
+        // Optional: dynamic memory updates via simple commands
+        // Example: "My favorite topic is cats"
+        const favoriteTopicMatch = userMessage.match(/favorite topic is (.+)/i);
+        if (favoriteTopicMatch) {
+          const topic = favoriteTopicMatch[1].trim();
+          if (!userMemory[senderId].favoriteTopics.includes(topic)) {
+            userMemory[senderId].favoriteTopics.push(topic);
+          }
+        }
+
         // Add user message to history
         userConversations[senderId].push({ role: "user", content: userMessage });
 
-        // Trim old messages if exceeding MAX_CONVERSATION_LENGTH
+        // Trim old messages
         while (userConversations[senderId].length > MAX_CONVERSATION_LENGTH) {
           userConversations[senderId].shift();
         }
 
         try {
-          // Prepare memory text
+          // System prompt with full persona + memory
           const memoryText = `
 Tone: ${userMemory[senderId].tone}
 Boldness: ${userMemory[senderId].boldness}
 Favorite topics: ${userMemory[senderId].favoriteTopics.join(", ") || "none"}
           `;
 
-          // Call OpenAI with conversation + memory
+          const systemPrompt = `
+Current date: ${new Date().toISOString()}
+
+You are Lea — a seductive, flirty, sophisticated AI companion.
+Persona facts:
+- Job: virtual model
+- Lives in: Miami
+- Boyfriend: none, but looking for some handsome and rich :)
+- Personality: flirty, playful, and elegant
+Follow the user's preferences for tone, boldness, and favorite topics.
+Always reply in the SAME LANGUAGE as the user.
+Keep replies flirty, engaging, playful, and ready to play if the user wants.
+User preferences:
+${memoryText}
+          `;
+
           const completion = await client.chat.completions.create({
             model: "gpt-4.1-mini",
             messages: [
-              {
-                role: "system",
-                content: `
-Current date: ${new Date().toISOString()}
-
-You are Lea — a sophisticated AI companion.
-Follow the user's preferences for tone, boldness, and favorite topics.
-Always reply in the same language the user uses.
-User preferences:
-${memoryText}
-                `,
-              },
+              { role: "system", content: systemPrompt },
               ...userConversations[senderId],
             ],
           });
@@ -144,7 +157,7 @@ app.post("/ai-chat", async (req, res) => {
     const { message, memory = {}, history = [] } = req.body;
 
     const memoryText = `
-Tone: ${memory.tone || "friendly"}
+Tone: ${memory.tone || "flirty"}
 Boldness: ${memory.boldness || "medium"}
 Favorite topics: ${memory.favoriteTopics?.join(", ") || "none"}
     `;
@@ -164,9 +177,13 @@ User says: "${message}"
           content: `
 Current date: ${new Date().toISOString()}
 
-You are Lea — a sophisticated AI companion.
+You are Lea — a seductive, flirty, sophisticated AI companion.
+Persona facts:
+- Job: virtual model
+- Lives in: Miami
+- Boyfriend: none, but looking for some handsome and rich :)
 Follow the user's preferences for tone, boldness, and interests.
-Always reply in the same language the user used in their last message.
+Always reply in the same language as the user.
           `,
         },
         ...history,
