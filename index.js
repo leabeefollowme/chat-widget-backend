@@ -17,10 +17,11 @@ const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 app.use(cors());
 app.use(bodyParser.json());
 
+// -------------------------------
 // In-memory storage
-const userConversations = {}; // { senderId: [ {role, content}, ... ] }
+// -------------------------------
+const userConversations = {}; // { senderId: [{role, content}, ...] }
 const userMemory = {}; // { senderId: { tone, boldness, favoriteTopics, allowAdultContent } }
-
 const MAX_CONVERSATION_LENGTH = 20;
 
 // -------------------------------
@@ -52,7 +53,7 @@ app.get("/webhook", (req, res) => {
 });
 
 // -------------------------------
-// Receive messages
+// Receive Messenger messages
 // -------------------------------
 app.post("/webhook", async (req, res) => {
   const body = req.body;
@@ -65,8 +66,7 @@ app.post("/webhook", async (req, res) => {
       if (event.message && event.message.text) {
         const userMessage = event.message.text;
 
-        // Initialize conversation and memory
-        if (!userConversations[senderId]) userConversations[senderId] = [];
+        // Initialize user memory
         if (!userMemory[senderId])
           userMemory[senderId] = {
             tone: "flirty",
@@ -75,30 +75,32 @@ app.post("/webhook", async (req, res) => {
             allowAdultContent: false,
           };
 
-        // Detect adult content consent
+        // Initialize conversation history
+        if (!userConversations[senderId]) userConversations[senderId] = [];
+
+        // Detect adult consent
         if (/ok to be explicit|be naughty|adult/i.test(userMessage)) {
           userMemory[senderId].allowAdultContent = true;
         }
 
-        // Optional: dynamic memory updates
-        const favoriteTopicMatch = userMessage.match(/favorite topic is (.+)/i);
-        if (favoriteTopicMatch) {
-          const topic = favoriteTopicMatch[1].trim();
-          if (!userMemory[senderId].favoriteTopics.includes(topic)) {
+        // Update favorite topics dynamically
+        const favMatch = userMessage.match(/favorite topic is (.+)/i);
+        if (favMatch) {
+          const topic = favMatch[1].trim();
+          if (!userMemory[senderId].favoriteTopics.includes(topic))
             userMemory[senderId].favoriteTopics.push(topic);
-          }
         }
 
         // Add user message to conversation
         userConversations[senderId].push({ role: "user", content: userMessage });
 
-        // Trim old messages
+        // Trim conversation history
         while (userConversations[senderId].length > MAX_CONVERSATION_LENGTH) {
           userConversations[senderId].shift();
         }
 
         try {
-          // System prompt with persona, memory, adult content flag
+          // Build system prompt
           const memoryText = `
 Tone: ${userMemory[senderId].tone}
 Boldness: ${userMemory[senderId].boldness}
@@ -109,19 +111,19 @@ Favorite topics: ${userMemory[senderId].favoriteTopics.join(", ") || "none"}
 Current date: ${new Date().toISOString()}
 
 You are Lea — a seductive, flirty, sophisticated AI companion.
-Persona facts:
+Persona:
 - Job: virtual model
 - Lives in: Miami
 - Boyfriend: none, but looking for some handsome and rich :)
 - Personality: flirty, playful, and elegant
-Follow the user's preferences for tone, boldness, and favorite topics.
+Adult content: ${userMemory[senderId].allowAdultContent ? "Allowed" : "Not allowed"}
+Follow user's preferences for tone, boldness, and favorite topics.
 Always reply in the SAME LANGUAGE as the user.
 Keep replies flirty, engaging, playful, and ready to play if the user wants.
-Adult content: ${userMemory[senderId].allowAdultContent ? "Allowed" : "Not allowed"}
-User preferences:
 ${memoryText}
           `;
 
+          // OpenAI request
           const completion = await client.chat.completions.create({
             model: "gpt-4.1-mini",
             messages: [
@@ -156,7 +158,7 @@ ${memoryText}
 });
 
 // -------------------------------
-// Optional: Frontend AI-chat route
+// Frontend AI chat (optional)
 // -------------------------------
 app.post("/ai-chat", async (req, res) => {
   try {
@@ -204,6 +206,27 @@ Always reply in the same language as the user.
     console.error("OpenAI error:", err);
     res.status(500).json({ reply: "Error contacting my intelligence core…" });
   }
+});
+
+// -------------------------------
+// User Data Deletion Endpoint
+// -------------------------------
+app.post("/user-data-deletion", async (req, res) => {
+  const body = req.body;
+  const userId = body.user_id;
+
+  if (!userId) return res.status(400).json({ error: "Missing user_id" });
+
+  // Delete user data
+  delete userMemory[userId];
+  delete userConversations[userId];
+
+  console.log(`User data deleted for: ${userId}`);
+
+  // Respond to Facebook
+  res.json({
+    url: "https://leabeefollowme.github.io/lea-bot-privacy/", // optional confirmation page
+  });
 });
 
 // -------------------------------
