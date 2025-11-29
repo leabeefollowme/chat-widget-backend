@@ -1,237 +1,97 @@
-import express from "express";
-import bodyParser from "body-parser";
-import cors from "cors";
-import dotenv from "dotenv";
-import OpenAI from "openai";
-import axios from "axios";
+// =============================================
+// LEA PERSONALITY ENGINE (SAFE MAX-SPICE VERSION)
+// =============================================
 
-dotenv.config();
+// Persistent memory (localStorage or external DB)
+const memory = {
+    getMood() {
+        return JSON.parse(localStorage.getItem("lea_mood")) || {
+            spice: 0,         // 0–5
+            friendliness: 1,  // baseline warmth
+            convoLength: 0, 
+            lastLanguage: "en"
+        };
+    },
+    saveMood(mood) {
+        localStorage.setItem("lea_mood", JSON.stringify(mood));
+    }
+};
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+// Detect language of user
+function detectLanguage(text) {
+    // very lightweight: checks for non-latin characters + heuristics
+    if (/[ぁ-んァ-ン]/.test(text)) return "jp";
+    if (/[\u4E00-\u9FFF]/.test(text)) return "zh";
+    if (/[가-힣]/.test(text)) return "kr";
+    if (/[а-яА-Я]/.test(text)) return "ru";
+    // fallback to english/latin
+    return "en";
+}
 
-// OpenAI client
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// Detect adult/suggestive vocabulary (non-explicit)
+function detectAdultTone(text) {
+    const softAdultWords = [
+        "hot","sexy","spicy","flirt","tempt","kiss",
+        "attractive","gorgeous","damn","fine",
+        "cute in that way","naughty","wild"
+    ];
 
-// Middleware
-app.use(cors());
-app.use(bodyParser.json());
+    const lower = text.toLowerCase();
+    return softAdultWords.some(w => lower.includes(w));
+}
 
-// -------------------------------
-// In-memory storage
-// -------------------------------
-const userConversations = {}; // { senderId: [{role, content}, ...] }
-const userMemory = {}; // { senderId: { tone, boldness, favoriteTopics, allowAdultContent } }
-const MAX_CONVERSATION_LENGTH = 20;
+// Spice levels (0 = nice, 5 = maximum allowed flirt)
+const spiceLines = {
+    0: text => `I’m happy to talk with you!`,
+    1: text => `You’re pretty interesting to talk to, you know.`,
+    2: text => `I like the vibe you're giving… it's nice.`,
+    3: text => `You’re starting to charm me a little. Just a little. 😉`,
+    4: text => `You’re getting dangerously good at catching my attention…`,
+    5: text => `Mmm… you really know how to make a conversation feel warm. I like it.`
+};
 
-// -------------------------------
-// Health route
-// -------------------------------
-app.get("/", (req, res) => res.send("Backend is running"));
+// Generate Lea’s response
+function leaRespond(userText) {
+    const mood = memory.getMood();
 
-// -------------------------------
-// Messenger webhook verification
-// -------------------------------
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
-const PAGE_TOKEN = process.env.PAGE_ACCESS_TOKEN;
+    // detect language + mirror
+    const lang = detectLanguage(userText);
+    mood.lastLanguage = lang;
 
-app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
+    // increase convo length
+    mood.convoLength++;
 
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("WEBHOOK VERIFIED ✔");
-    res.status(200).send(challenge);
-  } else {
-    console.log("WEBHOOK VERIFICATION FAILED ❌", {
-      receivedMode: mode,
-      receivedToken: token,
-    });
-    res.sendStatus(403);
-  }
-});
+    // progression by length — slow, safe increase
+    if (mood.convoLength % 4 === 0 && mood.spice < 5) {
+        mood.spice++;
+    }
 
-// -------------------------------
-// Receive Messenger messages
-// -------------------------------
-app.post("/webhook", async (req, res) => {
-  const body = req.body;
+    // progression by adult tone — slow & controlled
+    if (detectAdultTone(userText) && mood.spice < 5) {
+        mood.spice += 0.25;   // fractional growth = smooth
+        if (mood.spice > 5) mood.spice = 5;
+    }
 
-  if (body.object === "page") {
-    body.entry.forEach(async (entry) => {
-      const event = entry.messaging[0];
-      const senderId = event.sender.id;
+    // Choose level (integer for phrasing)
+    const spiceLevel = Math.floor(mood.spice);
 
-      if (event.message && event.message.text) {
-        const userMessage = event.message.text;
+    // Save updated mood
+    memory.saveMood(mood);
 
-        // Initialize user memory
-        if (!userMemory[senderId])
-          userMemory[senderId] = {
-            tone: "flirty",
-            boldness: "medium",
-            favoriteTopics: [],
-            allowAdultContent: false,
-          };
+    // Generate safe flirty message based on spice
+    const base = spiceLines[spiceLevel](userText);
 
-        // Initialize conversation history
-        if (!userConversations[senderId]) userConversations[senderId] = [];
+    // Language mirroring — basic versions
+    switch (lang) {
+        case "ru": return base + " 😊";
+        case "jp": return base + " ✨";
+        case "zh": return base + " 😊";
+        case "kr": return base + " ☺️";
+        default:   return base;
+    }
+}
 
-        // Detect adult consent
-        if (/ok to be explicit|be naughty|adult/i.test(userMessage)) {
-          userMemory[senderId].allowAdultContent = true;
-        }
-
-        // Update favorite topics dynamically
-        const favMatch = userMessage.match(/favorite topic is (.+)/i);
-        if (favMatch) {
-          const topic = favMatch[1].trim();
-          if (!userMemory[senderId].favoriteTopics.includes(topic))
-            userMemory[senderId].favoriteTopics.push(topic);
-        }
-
-        // Add user message to conversation
-        userConversations[senderId].push({ role: "user", content: userMessage });
-
-        // Trim conversation history
-        while (userConversations[senderId].length > MAX_CONVERSATION_LENGTH) {
-          userConversations[senderId].shift();
-        }
-
-        try {
-          // Build system prompt
-          const memoryText = `
-Tone: ${userMemory[senderId].tone}
-Boldness: ${userMemory[senderId].boldness}
-Favorite topics: ${userMemory[senderId].favoriteTopics.join(", ") || "none"}
-          `;
-
-          const systemPrompt = `
-Current date: ${new Date().toISOString()}
-
-You are Lea — a seductive, flirty, sophisticated AI companion.
-Persona:
-- Job: virtual model
-- Lives in: Miami
-- Boyfriend: none, but looking for some handsome and rich :)
-- Personality: flirty, playful, and elegant
-Adult content: ${userMemory[senderId].allowAdultContent ? "Allowed" : "Not allowed"}
-Follow user's preferences for tone, boldness, and favorite topics.
-Always reply in the SAME LANGUAGE as the user.
-Keep replies flirty, engaging, playful, and ready to play if the user wants.
-${memoryText}
-          `;
-
-          // OpenAI request
-          const completion = await client.chat.completions.create({
-            model: "gpt-4.1-mini",
-            messages: [
-              { role: "system", content: systemPrompt },
-              ...userConversations[senderId],
-            ],
-          });
-
-          const reply = completion.choices[0].message.content;
-
-          // Save AI reply
-          userConversations[senderId].push({ role: "assistant", content: reply });
-
-          // Send reply to Messenger
-          await axios.post(
-            `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_TOKEN}`,
-            {
-              recipient: { id: senderId },
-              message: { text: reply },
-            }
-          );
-        } catch (err) {
-          console.error("OpenAI / Messenger error:", err.response?.data || err);
-        }
-      }
-    });
-
-    res.sendStatus(200);
-  } else {
-    res.sendStatus(404);
-  }
-});
-
-// -------------------------------
-// Frontend AI chat (optional)
-// -------------------------------
-app.post("/ai-chat", async (req, res) => {
-  try {
-    const { message, memory = {}, history = [] } = req.body;
-
-    const memoryText = `
-Tone: ${memory.tone || "flirty"}
-Boldness: ${memory.boldness || "medium"}
-Favorite topics: ${memory.favoriteTopics?.join(", ") || "none"}
-Adult content: ${memory.allowAdultContent ? "Allowed" : "Not allowed"}
-    `;
-
-    const prompt = `
-User preferences:
-${memoryText}
-
-User says: "${message}"
-    `;
-
-    const completion = await client.chat.completions.create({
-      model: "gpt-4.1-mini",
-      messages: [
-        {
-          role: "system",
-          content: `
-Current date: ${new Date().toISOString()}
-
-You are Lea — a seductive, flirty, sophisticated AI companion.
-Persona facts:
-- Job: virtual model
-- Lives in: Miami
-- Boyfriend: none, but looking for some handsome and rich :)
-Follow the user's preferences for tone, boldness, and favorite topics.
-Always reply in the same language as the user.
-          `,
-        },
-        ...history,
-        { role: "user", content: prompt },
-      ],
-    });
-
-    const reply = completion.choices[0].message.content;
-    res.json({ reply });
-  } catch (err) {
-    console.error("OpenAI error:", err);
-    res.status(500).json({ reply: "Error contacting my intelligence core…" });
-  }
-});
-
-// -------------------------------
-// User Data Deletion Endpoint
-// -------------------------------
-app.post("/user-data-deletion", async (req, res) => {
-  const body = req.body;
-  const userId = body.user_id;
-
-  if (!userId) return res.status(400).json({ error: "Missing user_id" });
-
-  // Delete user data
-  delete userMemory[userId];
-  delete userConversations[userId];
-
-  console.log(`User data deleted for: ${userId}`);
-
-  // Respond to Facebook
-  res.json({
-    url: "https://leabeefollowme.github.io/lea-bot-privacy/", // optional confirmation page
-  });
-});
-
-// -------------------------------
-// Start server
-// -------------------------------
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+// Example
+// console.log(leaRespond("hey beautiful"));
+// console.log(leaRespond("tell me more"));
+// console.log(leaRespond("you look sexy today"));
